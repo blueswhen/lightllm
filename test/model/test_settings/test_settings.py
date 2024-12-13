@@ -13,17 +13,13 @@ from lightllm.models.starcoder.model import StarcoderTpPartModel
 from lightllm.models.qwen.model import QWenTpPartModel
 from lightllm.models.chatglm2.model import ChatGlm2TpPartModel
 from lightllm.models.internlm.model import InternlmTpPartModel
+from lightllm.models.deepseek2.model import Deepseek2TpPartModel
 
 
-base_dir = "/nvme/"
+base_dir = "/mnt/llm/DeepSeekV2"
 
 model_to_class_and_path = {
-    "llama-7b": (LlamaTpPartModel, os.path.join(base_dir, "llama-7b")),
-    "llama-13b": (LlamaTpPartModel, os.path.join(base_dir, "")),
-    "internal-20b": (InternlmTpPartModel, os.path.join(base_dir, "")),
-    "llama-65b": (LlamaTpPartModel, os.path.join(base_dir, "")),
-    "llama2-70b": (LlamaTpPartModel, os.path.join(base_dir, "")),
-    "chatglm2-6b": (ChatGlm2TpPartModel, os.path.join(base_dir, "")),
+    "DeepSeek-V2-Lite": (Deepseek2TpPartModel, os.path.join(base_dir, "DeepSeek-V2-Lite")),
 }
 
 
@@ -32,10 +28,10 @@ def test_all_setting(gpu_name, model_name, mode, log_dir, world_sizes, in_out_le
     os.makedirs(log_dir, exist_ok=True)
 
     model_class, model_path = model_to_class_and_path[model_name]
-    kill_gpu_processes()
+    # kill_gpu_processes()
     for world_size in world_sizes:
         for in_len, out_len in in_out_lens:
-            kill_gpu_processes()
+            # kill_gpu_processes()
             mode_str = "_".join(mode)
             log_file_name = f"{model_name}##{mode_str}##{world_size}##{in_len}##{out_len}##batch_size##.log"
             log_path = os.path.join(log_dir, log_file_name)
@@ -109,9 +105,11 @@ def test_all_setting(gpu_name, model_name, mode, log_dir, world_sizes, in_out_le
     md_file.close()
 
 
-gpu_name = "A800"
-in_out_lens = [(128, 128), (256, 256)]  # in_out_lens 中的数据必须以从短到长的顺序排列，否则可能有问题。
-batch_sizes = [1, 2]  # batch_sizes 中的数字也必须从小到大排列。
+gpu_name = "H100"
+in_out_lens = [
+    (16384, 256),
+]  # in_out_lens 中的数据必须以从短到长的顺序排列，否则可能有问题。
+batch_sizes = [16]  # batch_sizes 中的数字也必须从小到大排列。
 
 
 if __name__ == "__main__":
@@ -119,12 +117,15 @@ if __name__ == "__main__":
 
     torch.multiprocessing.set_start_method("spawn")
 
+    os.environ["DISABLE_QK_ABSORB"] = "1"
+    os.environ["DISABLE_VO_ABSORB"] = "1"
+    os.environ["ENABLE_OPT_DECODE_MHA"] = "1"
+    os.environ["LOADWORKER"] = "8"
     test_all_setting(
         gpu_name,
-        "llama3-8b",
-        #  mode=["triton_int8weight", "ppl_fp16_flashdecoding"], # mode 为 【】 为普通 fp16 的格式。
-        mode=["triton_gqa_flashdecoding"],
-        log_dir="./",
+        "DeepSeek-V2-Lite",
+        mode=[],
+        log_dir="/home/niushengxiao/log_dir/",
         world_sizes=[1],
         in_out_lens=in_out_lens,
         batch_sizes=batch_sizes,

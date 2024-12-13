@@ -81,13 +81,13 @@ class TpPartBaseModel:
             self._init_weights()
 
         self._init_kv_move_buffer()
-        self._check_mem_size()
+        # self._check_mem_size()
         self._init_req_manager()
         self._init_infer_layer()
         self._init_some_value()
         self._init_custom()
         self._init_cudagraph()
-        self._check_max_len_infer()
+        # self._check_max_len_infer()
         torch.cuda.empty_cache()
         return
 

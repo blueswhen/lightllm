@@ -2,6 +2,7 @@ import os
 import numpy as np
 from multiprocessing import Queue
 import multiprocessing
+import nvtx
 
 
 def test_model_inference(world_size, model_dir, model_class, batch_sizes, input_len, output_len, mode, log_path):
@@ -15,6 +16,7 @@ def test_model_inference(world_size, model_dir, model_class, batch_sizes, input_
             "weight_dir": model_dir,
             "max_total_token_num": None,
             "mem_faction": 0.8,
+            "data_type": "bfloat16",
             "load_way": "HF",
             "batch_max_tokens": (input_len + output_len),
             "mode": mode,
@@ -188,6 +190,7 @@ def tppart_model_infer(model_class, model_kvargs, batch_sizes, input_len, output
         if rank_id == 0:
             print("prefill time cost:", (time.time() - prefill_start_time) * 1000, file=fp_file)
 
+        # nvtx.push_range("decoding")
         for i in range(output_len):
             torch.cuda.synchronize()
             step_start = time.time()
@@ -214,6 +217,7 @@ def tppart_model_infer(model_class, model_kvargs, batch_sizes, input_len, output
                 if rank_id == 0:
                     print(i, "step cost time:", (time.time() - step_start) * 1000, file=fp_file)
 
+        # nvtx.pop_range()
         torch.cuda.synchronize()
         end_time = time.time()
 
