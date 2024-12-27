@@ -1,8 +1,9 @@
 import yaml
 import collections
 from .registry import QUANTMETHODS
-from .ppl_quant import *
-from .torchao_quant import *
+
+# from .ppl_quant import *
+# from .torchao_quant import *
 from .vllm_quant import *
 
 

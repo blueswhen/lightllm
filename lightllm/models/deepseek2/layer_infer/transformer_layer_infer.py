@@ -23,6 +23,7 @@ from lightllm.models.deepseek2.infer_struct import Deepseek2InferStateInfo
 from functools import partial
 from lightllm.models.llama.yarn_rotary_utils import get_deepseek_mscale
 import os
+from lightllm.common.quantization import vLLMFP8w8a8QuantizationMethod
 
 
 class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
@@ -324,12 +325,18 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
         return self._ACC_method(q, compressed_kv, infer_state, layer_weight)
 
     def _token_gqa_decode_attention_flashdecoding_origin(
-        self, q, infer_state: Deepseek2InferStateInfo, layer_weight, out=None
+        self, q, infer_state: Deepseek2InferStateInfo, layer_weight: Deepseek2TransformerLayerWeight, out=None
     ):
         q_nope, q_rope = q
         kv = infer_state.mem_manager.kv_buffer[self.layer_num_][:, :, : self.kv_lora_rank]
         kv_rope = infer_state.mem_manager.kv_buffer[self.layer_num_][:, :, self.kv_lora_rank :]
-        return gqa_token_decode_attention_flash_decoding(
+        # quant_method = vLLMFP8w8a8QuantizationMethod()
+        # q_nope_quant = quant_method.quantize(q_nope.reshape(-1, q_nope.shape[-1]), False)
+        # q_rope_quant = quant_method.quantize(q_rope.reshape(-1, q_rope.shape[-1]), False)
+        # kv_quant = quant_method.quantize(kv.reshape(-1, kv.shape[-1]), False)
+        # kv_rope_quant = quant_method.quantize(kv_rope.reshape(-1, kv_rope.shape[-1]), False)
+        o_tensor = self.alloc_tensor(q_nope.shape, dtype=q_nope.dtype, device=q_nope.device) if out is None else out
+        gqa_token_decode_attention_flash_decoding(
             q_nope,
             q_rope,
             kv,
@@ -340,8 +347,10 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
             self.qk_rope_head_dim,
             self.qk_nope_head_dim,
             self.softmax_scale,
-            alloc_tensor_func=self.alloc_tensor,
+            o_tensor,
+            use_fp8_w8a8=False,
         )
+        return o_tensor
 
     def _copy_kv_to_mem_cache_normal(self, buffer, mem_index, mem_manager):
         destindex_copy_kv(

@@ -33,12 +33,12 @@ class AOBaseQuantizationMethod(QuantizationMethod):
         assert TORCH_VERSION_AT_LEAST_2_4, "torchao requires torch >=2.4"
         self.quant_func = None
 
-    def quantize(self, weight: torch.Tensor):
+    def quantize(self, weight: torch.Tensor, transpose=True):
         """ """
         dummy_linear = torch.nn.Linear(weight.shape[1], weight.shape[0], bias=False)
         dummy_linear.weight = torch.nn.Parameter(weight.cuda())
         quantize_(dummy_linear, self.quant_func)
-        return dummy_linear.weight
+        return dummy_linear.weight if transpose else dummy_linear.weight.transpose(0, 1)
 
     def apply(self, input_tensor, weights, bias=None, out=None, workspace=None):
         return F.linear(input_tensor, weights, bias)

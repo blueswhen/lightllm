@@ -1,6 +1,7 @@
 import torch
 from .quantize_method import QuantizationMethod
 from .registry import QUANTMETHODS
+
 from lightllm.common.basemodel.layer_infer.cache_tensor_manager import g_cache_manager
 import torch.nn.functional as F
 
@@ -65,13 +66,13 @@ class vLLMFP8w8a8QuantizationMethod(vLLMBaseQuantizationMethod):
         super().__init__()
         self.is_moe = False
 
-    def quantize(self, weight: torch.Tensor):
+    def quantize(self, weight: torch.Tensor, transpose=True):
         if self.is_moe:
             return self.quantize_moe(weight)
         qweight, weight_scale = ops.scaled_fp8_quant(
             weight.contiguous().cuda(), scale=None, use_per_token_if_dynamic=True
         )
-        return qweight.transpose(0, 1), weight_scale
+        return qweight.transpose(0, 1) if transpose else qweight, weight_scale
 
     def quantize_moe(self, weight):
         num_experts = weight.shape[0]

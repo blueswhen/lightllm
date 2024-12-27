@@ -3,6 +3,7 @@ import torch
 import torch.multiprocessing as mp
 from typing import List
 from lightllm.utils.log_utils import init_logger
+from lightllm.common.quantization.vllm_quant import vLLMFP8w8a8QuantizationMethod
 
 logger = init_logger(__name__)
 
@@ -20,6 +21,7 @@ def gqa_token_decode_attention_flash_decoding(
     softmax_scale,
     out=None,
     alloc_tensor_func=torch.empty,
+    use_fp8_w8a8: bool = False,
 ):
     if hasattr(os, "tuning_config"):
         BLOCK_SEQ = os.tuning_config["BLOCK_SEQ"]
@@ -43,10 +45,10 @@ def gqa_token_decode_attention_flash_decoding(
     )
 
     flash_decode_stage1(
-        q_nope.view(calcu_shape1),
-        q_rope.view(calcu_shape2),
-        kv_nope,
-        kv_rope,
+        q_nope.view(calcu_shape1) if not use_fp8_w8a8 else (q_nope[0].view(calcu_shape1), q_nope[1]),
+        q_rope.view(calcu_shape2) if not use_fp8_w8a8 else (q_rope[0].view(calcu_shape2), q_rope[1]),
+        kv_nope if not use_fp8_w8a8 else (kv_nope[0].reshape(-1, 1, kv_nope[0].shape[-1]), kv_nope[1]),
+        kv_rope if not use_fp8_w8a8 else (kv_rope[0].reshape(-1, 1, kv_rope[0].shape[-1]), kv_rope[1]),
         infer_state.req_manager.req_to_token_indexs,
         infer_state.b_req_idx,
         infer_state.b_seq_len,
@@ -55,6 +57,7 @@ def gqa_token_decode_attention_flash_decoding(
         mid_o_logexpsum,
         BLOCK_SEQ,
         softmax_scale,
+        use_fp8_w8a8,
     )
     flash_decode_stage2(mid_o, mid_o_logexpsum, infer_state.b_seq_len, o_tensor.view(calcu_shape1), BLOCK_SEQ)
     return o_tensor
@@ -83,6 +86,10 @@ def test_decode_attentions(
     ).cuda()
     infer_state.b_req_idx = torch.arange(0, infer_state.batch_size, step=1, dtype=torch.int32).cuda()
     infer_state.b_seq_len = torch.full((infer_state.batch_size,), fill_value=test_seq_len, dtype=torch.int32).cuda()
+    infer_state.b_start_loc = torch.arange(0, infer_state.batch_size, dtype=torch.int32, device="cuda")
+    infer_state.kv_starts = torch.cat(
+        [infer_state.b_start_loc, infer_state.b_start_loc[-1:] + infer_state.b_seq_len[-1:]], dim=0
+    )
 
     input_tuples = []
     for _ in range(test_count):
@@ -111,32 +118,21 @@ def test_decode_attentions(
         else:
             return tensor_dict[shape]
 
-    gqa_token_decode_attention_flash_decoding(
-        q_nope,
-        q_rope,
-        kv_nope,
-        kv_rope,
-        infer_state,
-        q_nope_shape[1],
-        q_nope_shape[2],
-        q_rope_shape[2],
-        None,
-        0.01,
-        out=o_tensor,
-        alloc_tensor_func=inner_alloc_func,
-    )
+    quant_method = vLLMFP8w8a8QuantizationMethod()
+    q_nope_quant = quant_method.quantize(q_nope.reshape(-1, q_nope.shape[-1]), False)
+    q_rope_quant = quant_method.quantize(q_rope.reshape(-1, q_rope.shape[-1]), False)
+    kv_nope_quant = quant_method.quantize(kv_nope.reshape(-1, kv_nope.shape[-1]), False)
+    kv_rope_quant = quant_method.quantize(kv_rope.reshape(-1, kv_rope.shape[-1]), False)
 
-    import time
+    is_quant = False
+    import triton
 
-    torch.cuda.synchronize()
-    start = time.time()
-    for index in range(test_count):
-        q_nope, q_rope, kv_buffer, kv_nope, kv_rope, o_tensor = input_tuples[index]
-        gqa_token_decode_attention_flash_decoding(
-            q_nope,
-            q_rope,
-            kv_nope,
-            kv_rope,
+    if is_quant:
+        fn = lambda: gqa_token_decode_attention_flash_decoding(
+            q_nope_quant,
+            q_rope_quant,
+            kv_nope_quant,
+            kv_rope_quant,
             infer_state,
             q_nope_shape[1],
             q_nope_shape[2],
@@ -145,12 +141,42 @@ def test_decode_attentions(
             0.01,
             out=o_tensor,
             alloc_tensor_func=inner_alloc_func,
+            use_fp8_w8a8=True,
         )
-    torch.cuda.synchronize()
+    else:
+        # fn = lambda: gqa_token_decode_attention_flash_decoding(
+        #         q_nope,
+        #         q_rope,
+        #         kv_nope,
+        #         kv_rope,
+        #         infer_state,
+        #         q_nope_shape[1],
+        #         q_nope_shape[2],
+        #         q_rope_shape[2],
+        #         None,
+        #         0.01,
+        #         out=o_tensor,
+        #         alloc_tensor_func=inner_alloc_func,
+        #         use_fp8_w8a8=False,
+        #     )
 
-    cost_time = (time.time() - start) * 1000
+        import lightllm_ppl_mla
 
-    logger.info(f"bf16 {test_seq_len} cost time: {cost_time} ms")
+        q = torch.cat([q_nope, q_rope], dim=-1)
+        fn = lambda: lightllm_ppl_mla.decode_mla(
+            o_tensor,
+            q,
+            kv_buffer,
+            infer_state.req_manager.req_to_token_indexs,
+            infer_state.kv_starts,
+            infer_state.b_req_idx,
+            0.01,
+            q.shape[-1],
+            q_nope.shape[-1],
+        )
+    cost_time = triton.testing.do_bench(fn) * 1000.0
+
+    logger.info(f"bf16 {test_seq_len} cost time: {cost_time} us")
     return cost_time
 
 
@@ -165,35 +191,28 @@ def worker(
     test_configs,
     queue,
 ):
-    try:
-        for index in range(len(test_configs)):
-            os.tuning_config = test_configs[index]
-            cost_time = test_decode_attentions(
-                q_nope_shape=q_nope_shape,
-                q_rope_shape=q_rope_shape,
-                kv_nope_shape=kv_nope_shape,
-                kv_rope_shape=kv_rope_shape,
-                test_seq_len=test_seq_len,
-                dtype=dtype,
-                test_count=test_count,
-            )
-            queue.put(cost_time)  # Put result in queue
-    except Exception as ex:
-        logger.error(str(ex))
-        import sys
-
-        sys.exit(-1)
-        pass
+    for index in range(len(test_configs)):
+        os.tuning_config = test_configs[index]
+        cost_time = test_decode_attentions(
+            q_nope_shape=q_nope_shape,
+            q_rope_shape=q_rope_shape,
+            kv_nope_shape=kv_nope_shape,
+            kv_rope_shape=kv_rope_shape,
+            test_seq_len=test_seq_len,
+            dtype=dtype,
+            test_count=test_count,
+        )
+        queue.put(cost_time)  # Put result in queue
 
 
 def get_test_configs():
-    for block_seq in [16, 32, 64, 128, 256]:
-        for block_n in [16, 32, 64, 128, 256]:
-            for block_q_head in [16, 32, 64]:
-                for stage1_num_warps in [1, 2, 4, 8, 16]:
-                    for stage1_num_stages in [1, 2, 3, 4, 5]:
-                        for stage2_num_warps in [1, 2, 4, 8, 16]:
-                            for stage2_num_stages in [1, 2, 3, 4, 5]:
+    for block_seq in [128]:
+        for block_n in [32]:
+            for block_q_head in [16]:
+                for stage1_num_warps in [4]:
+                    for stage1_num_stages in [3]:
+                        for stage2_num_warps in [4]:
+                            for stage2_num_stages in [2]:
                                 if block_seq % block_n == 0:
                                     t_config = {
                                         "BLOCK_SEQ": block_seq,
@@ -294,8 +313,8 @@ if __name__ == "__main__":
         q_rope_shape=[200, 16, 64],
         kv_nope_shape=[None, 1, 512],
         kv_rope_shape=[None, 1, 64],
-        test_seq_len=1035,
+        test_seq_len=16384,
         dtype=torch.bfloat16,
-        test_count=20,
+        test_count=1,
     )
     pass

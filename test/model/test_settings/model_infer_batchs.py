@@ -190,7 +190,7 @@ def tppart_model_infer(model_class, model_kvargs, batch_sizes, input_len, output
         if rank_id == 0:
             print("prefill time cost:", (time.time() - prefill_start_time) * 1000, file=fp_file)
 
-        # nvtx.push_range("decoding")
+        nvtx.push_range("decoding")
         for i in range(output_len):
             torch.cuda.synchronize()
             step_start = time.time()
@@ -217,7 +217,7 @@ def tppart_model_infer(model_class, model_kvargs, batch_sizes, input_len, output
                 if rank_id == 0:
                     print(i, "step cost time:", (time.time() - step_start) * 1000, file=fp_file)
 
-        # nvtx.pop_range()
+        nvtx.pop_range()
         torch.cuda.synchronize()
         end_time = time.time()
 

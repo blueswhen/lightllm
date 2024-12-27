@@ -61,7 +61,7 @@ class TpPartBaseModel:
         self.data_type = kvargs.get("data_type", "float16")
         self.graph_max_batch_size = kvargs.get("graph_max_batch_size", 16)
         self.graph_max_len_in_batch = kvargs.get("graph_max_len_in_batch", 8192)
-        self.disable_cudagraph = kvargs.get("disable_cudagraph", False)
+        self.disable_cudagraph = kvargs.get("disable_cudagraph", True)
         self.quant_type = kvargs.get("quant_type", None)
         self.quant_cfg_path = kvargs.get("quant_cfg", None)
         self.mem_fraction = kvargs.get("mem_fraction", 0.9)

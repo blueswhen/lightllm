@@ -107,7 +107,7 @@ def test_all_setting(gpu_name, model_name, mode, log_dir, world_sizes, in_out_le
 
 gpu_name = "H100"
 in_out_lens = [
-    (16384, 256),
+    (1024, 256),
 ]  # in_out_lens 中的数据必须以从短到长的顺序排列，否则可能有问题。
 batch_sizes = [16]  # batch_sizes 中的数字也必须从小到大排列。
 
@@ -119,7 +119,8 @@ if __name__ == "__main__":
 
     os.environ["DISABLE_QK_ABSORB"] = "1"
     os.environ["DISABLE_VO_ABSORB"] = "1"
-    os.environ["ENABLE_OPT_DECODE_MHA"] = "1"
+    # os.environ["ENABLE_OPT_DECODE_MHA"] = "1"
+    os.environ["ENABLE_VLLM_REDUCE"] = "1"
     os.environ["LOADWORKER"] = "8"
     test_all_setting(
         gpu_name,

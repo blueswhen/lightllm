@@ -7,7 +7,7 @@ class QuantizationMethod(ABC):
         super().__init__()
 
     @abstractmethod
-    def quantize(self, weights: torch.Tensor):
+    def quantize(self, weights: torch.Tensor, transpose=True):
         pass
 
     @abstractmethod

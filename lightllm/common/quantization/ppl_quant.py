@@ -60,7 +60,7 @@ class FLASHLLMW6A16QuantizationMethod(QuantizationMethod):
     def __init__(self):
         super().__init__()
 
-    def quantize(self, weight: torch.Tensor):
+    def quantize(self, weight: torch.Tensor, transpose=True):
         weight = weight.to(dtype=torch.float32).cpu()
         M = weight.shape[0]
         N = weight.shape[1]
@@ -71,6 +71,8 @@ class FLASHLLMW6A16QuantizationMethod(QuantizationMethod):
         from flash_llm_fp6_llm import weight_quant_to_fp6
 
         fp6_weight = weight_quant_to_fp6(quant_half, fp6_weight, True)
+        if not transpose:
+            fp6_weight = fp6_weight.transpose(0, 1)
         return fp6_weight.cuda(), scale.half().contiguous().cuda()
 
     def apply(self, input_tensor, weights, bias=None, out=None, workspace=None):
