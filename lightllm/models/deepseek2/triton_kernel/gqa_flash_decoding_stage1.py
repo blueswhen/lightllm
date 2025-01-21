@@ -10,6 +10,7 @@ def _fwd_kernel_flash_decode_stage1_padding(
     Q_rope,
     KV_nope,
     KV_rope,
+    KV_scale,
     sm_scale,
     Req_to_tokens,
     B_req_idx,
@@ -35,11 +36,13 @@ def _fwd_kernel_flash_decode_stage1_padding(
     stride_mid_od,
     stride_mid_o_eh,
     stride_mid_o_es,
+    stride_kv_scaled_bs,
     block_size_ptr,
     num_sm,
     head_group_num,
     head_num,
     batch_size,
+    HAS_SCALE: tl.constexpr,
     Q_HEAD_NUM: tl.constexpr,
     BLOCK_DMODEL: tl.constexpr,
     BLOCK_ROPE_DMODEL: tl.constexpr,
@@ -108,9 +111,14 @@ def _fwd_kernel_flash_decode_stage1_padding(
                 )
                 off_kv = kv_loc[None, :] * stride_kv_bs + offs_d[:, None]
                 kv = tl.load(KV_nope + off_kv, mask=seq_n_mask[None, :], other=0.0)
-                att_value = tl.dot(q, kv)
                 off_rope_kv = kv_loc[None, :] * stride_kv_rope_bs + offs_rope_d[:, None]
                 rope_kv = tl.load(KV_rope + off_rope_kv, mask=seq_n_mask[None, :], other=0.0)
+                if HAS_SCALE:
+                    off_kv_scale = kv_loc[None, :] * stride_kv_scaled_bs
+                    kv_scale = tl.load(KV_scale + off_kv_scale, mask=seq_n_mask[None, :], other=0.0)
+                    kv = (kv * kv_scale).to(kv_scale.dtype)
+                    rope_kv = (rope_kv * kv_scale).to(kv_scale.dtype)
+                att_value = tl.dot(q, kv)
                 att_value += tl.dot(q_rope, rope_kv)
 
                 att_value *= sm_scale
@@ -167,6 +175,7 @@ def flash_decode_stage1(
     q_rope,
     kv_nope,
     kv_rope,
+    kv_scale,
     Req_to_tokens,
     B_req_idx,
     B_Seqlen,
@@ -201,6 +210,7 @@ def flash_decode_stage1(
         q_rope,
         kv_nope,
         kv_rope,
+        kv_scale,
         softmax_scale,
         Req_to_tokens,
         B_req_idx,
@@ -214,11 +224,13 @@ def flash_decode_stage1(
         *kv_rope.stride(),
         *mid_out.stride(),
         *mid_out_logsumexp.stride(),
+        kv_scale.stride(0) if kv_scale is not None else 0,
         in_block_seq,
         num_sm=1,
         head_group_num=head_group_num,
         head_num=q_head_num,
         batch_size=batch_size,
+        HAS_SCALE=1 if kv_scale is not None else 0,
         Q_HEAD_NUM=Q_HEAD_NUM,
         BLOCK_DMODEL=q_nope_dim,
         BLOCK_ROPE_DMODEL=q_rope_dim,
@@ -243,6 +255,7 @@ def flash_decode_stage1(
         q_rope,
         kv_nope,
         kv_rope,
+        kv_scale,
         softmax_scale,
         Req_to_tokens,
         B_req_idx,
@@ -256,11 +269,13 @@ def flash_decode_stage1(
         *kv_rope.stride(),
         *mid_out.stride(),
         *mid_out_logsumexp.stride(),
+        kv_scale.stride(0) if kv_scale is not None else 0,
         in_block_seq,
         num_sm=num_sm,
         head_group_num=head_group_num,
         head_num=q_head_num,
         batch_size=batch_size,
+        HAS_SCALE=1 if kv_scale is not None else 0,
         Q_HEAD_NUM=Q_HEAD_NUM,
         BLOCK_DMODEL=q_nope_dim,
         BLOCK_ROPE_DMODEL=q_rope_dim,

@@ -22,6 +22,7 @@ from lightllm.models.deepseek2.infer_struct import Deepseek2InferStateInfo
 from functools import partial
 from lightllm.models.llama.yarn_rotary_utils import get_deepseek_mscale
 import os
+from lightllm.common.quantization import vLLMFP8w8a8QuantizationMethod
 
 
 class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
@@ -68,6 +69,10 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
         return
 
     def _bind_attention(self):
+        if "deepseek2_bf16kv" in self.mode:
+            self._copy_kv_to_mem_cache = partial(Deepseek2TransformerLayerInfer._copy_kv_to_mem_cache_normal, self)
+        else:
+            self._copy_kv_to_mem_cache = partial(Deepseek2TransformerLayerInfer._copy_kv_to_mem_cache_fp8, self)
         if self.enable_cc_method:
             self._context_attention_kernel = partial(
                 Deepseek2TransformerLayerInfer._context_attention_kernel_with_CC, self
@@ -79,7 +84,6 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
         self._token_attention_kernel = partial(
             Deepseek2TransformerLayerInfer._token_gqa_decode_attention_flashdecoding, self
         )
-        self._copy_kv_to_mem_cache = partial(Deepseek2TransformerLayerInfer._copy_kv_to_mem_cache_normal, self)
         if self.is_moe:
             if self.enable_dp:
                 if os.environ.get("MOE_MODE", "TP") == "TP":
@@ -136,6 +140,12 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
     def _decompress_kv(self, kv, infer_state: Deepseek2InferStateInfo, layer_weight: Deepseek2TransformerLayerWeight):
         if infer_state.use_dynamic_prompt_cache:
             kv = infer_state.mem_manager.kv_buffer[self.layer_num_]
+            if "deepseek2_bf16kv" in self.mode:
+                kv_scale = None
+                k_scale = None
+            else:
+                kv_scale = infer_state.mem_manager.scale_buffer[self.layer_num_]
+                k_scale = self.alloc_tensor([infer_state.total_token_num, 1], dtype=kv_scale.dtype)
             compressed_kv = self.alloc_tensor(
                 [infer_state.total_token_num, 1, layer_weight.kv_lora_rank], dtype=kv.dtype
             )
@@ -147,7 +157,12 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
                 infer_state.b_req_idx,
                 infer_state.b_seq_len,
                 infer_state.req_manager.req_to_token_indexs,
+                kv_scale,
+                k_scale,
             )
+            if k_scale is not None:
+                compressed_kv = compressed_kv.to(k_scale.dtype) * k_scale.unsqueeze(-1)
+                k_rope = k_rope.to(k_scale.dtype) * k_scale.unsqueeze(-1)
         else:
             compressed_kv, k_rope = torch.split(  # (b*s, 1, kv_lora + qk_r)
                 kv, [layer_weight.kv_lora_rank, layer_weight.qk_rope_head_dim], dim=-1
@@ -265,11 +280,13 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
             return o_tensor
         else:
             kv = infer_state.mem_manager.kv_buffer[self.layer_num_]
+            kv_scale = infer_state.mem_manager.scale_buffer[self.layer_num_] if "deepseek2_fp8kv" in self.mode else None
             return gqa_token_decode_attention_flash_decoding(
                 q_nope,
                 q_rope,
                 kv[:, :, : -self.qk_rope_head_dim],
                 kv[:, :, -self.qk_rope_head_dim :],
+                kv_scale,
                 infer_state,
                 self.tp_q_head_num_,
                 self.kv_lora_rank,
@@ -318,6 +335,20 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
             mem_index,
             mem_manager.kv_buffer[self.layer_num_][:, :, : self.kv_lora_rank],
             mem_manager.kv_buffer[self.layer_num_][:, :, self.kv_lora_rank :],
+        )
+        return
+
+    def _copy_kv_to_mem_cache_fp8(self, buffer, mem_index, mem_manager):
+        quant_method = vLLMFP8w8a8QuantizationMethod()
+        quant, scale = quant_method.quantize_scaled_mm_fp8(buffer.reshape(-1, buffer.shape[-1]))
+        destindex_copy_kv(
+            quant.T.unsqueeze(1)[:, :, : self.kv_lora_rank],
+            quant.T.unsqueeze(1)[:, :, self.kv_lora_rank :],
+            mem_index,
+            mem_manager.kv_buffer[self.layer_num_][:, :, : self.kv_lora_rank],
+            mem_manager.kv_buffer[self.layer_num_][:, :, self.kv_lora_rank :],
+            scale.to(buffer.dtype),
+            mem_manager.scale_buffer[self.layer_num_],
         )
         return
 

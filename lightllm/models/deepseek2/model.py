@@ -7,7 +7,9 @@ from lightllm.common.basemodel.layer_weights.hf_load_utils import load_hf_weight
 
 from lightllm.models.llama.model import LlamaTpPartModel
 from lightllm.common.deepseek2_mem_manager import Deepseek2MemoryManager
+from lightllm.common.deepseek2_fp8kv_mem_manager import Deepseek2FP8KVMemoryManager
 from lightllm.utils.log_utils import init_logger
+from lightllm.common.mem_utils import select_mem_manager_class
 
 
 logger = init_logger(__name__)
@@ -48,13 +50,16 @@ class Deepseek2TpPartModel(LlamaTpPartModel):
         return super()._verify_params()
 
     def _init_mem_manager(self):
-        self.mem_manager = Deepseek2MemoryManager(
+        self.mem_manager = select_mem_manager_class(self.mode)(
             self.max_total_token_num,
             dtype=self.data_type,
             head_num=1,
             head_dim=self.config["kv_lora_rank"] + self.config["qk_rope_head_dim"],
             layer_num=self.config["num_hidden_layers"],
             mem_fraction=self.mem_fraction,
+        )
+        assert isinstance(self.mem_manager, Deepseek2MemoryManager) or isinstance(
+            self.mem_manager, Deepseek2FP8KVMemoryManager
         )
         return
 

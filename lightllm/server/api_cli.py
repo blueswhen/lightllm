@@ -113,7 +113,7 @@ def make_argument_parser() -> argparse.ArgumentParser:
         default=[],
         nargs="+",
         help="""Model mode: [triton_int8kv | ppl_int8kv | ppl_fp16 | triton_flashdecoding
-                        | triton_gqa_attention | triton_gqa_flashdecoding,
+                        | triton_gqa_attention | triton_gqa_flashdecoding | deepseek2_bf16kv | deepseek2_fp8kv,
                         triton_flashdecoding mode is for long context, current support llama llama2 qwen;
                         triton_gqa_attention and triton_gqa_flashdecoding is fast kernel for model which use GQA;
                         triton_int8kv mode use int8 to store kv cache, can increase token capacity, use triton kernel;
