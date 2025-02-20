@@ -179,8 +179,7 @@ if __name__ == "__main__":
     req_to_token_indexs = torch.randperm(max_input_len, dtype=torch.int32).cuda().view(Z, N_CTX)
     b_seq_len = torch.ones((Z,), dtype=torch.int32, device="cuda") * N_CTX
     b_start_loc = torch.arange(Z).cuda().int() * N_CTX
-    b_start_loc[0] = 0
-    b_req_idx = torch.arange(Z).cuda().int()
+    b_req_idx = torch.randperm(Z, dtype=torch.int32).cuda()
     kv_starts = torch.cat([b_start_loc, b_start_loc[-1:] + b_seq_len[-1:]], dim=0)
 
     o = torch.zeros((Z, H, D_HEAD), dtype=dtype, device="cuda")

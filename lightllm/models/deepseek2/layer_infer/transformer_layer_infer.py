@@ -68,6 +68,11 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
         self.num_heads = network_config["num_attention_heads"]
         self.num_kv_heads = network_config["num_key_value_heads"]
         self.enable_opt_decoding_mha = os.getenv("ENABLE_OPT_DECODE_MHA", "False").upper() in ["ON", "TRUE", "1"]
+        self.enable_flashinfer_prefilled = os.getenv("ENABLE_FLASHINFER_PREFILLED", "False").upper() in [
+            "ON",
+            "TRUE",
+            "1",
+        ]
         self.enable_flashinfer_decode_mla = os.getenv("ENABLE_FLASHINFER_DECODE_MLA", "False").upper() in [
             "ON",
             "TRUE",
@@ -223,22 +228,28 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
         out=None,
     ) -> torch.Tensor:
         k_nope, k_rope, v = self._decompress_kv(kv, infer_state, layer_weight, False)
-        q_nope, q_rope = q[:, :, : -self.qk_rope_head_dim], q[:, :, -self.qk_rope_head_dim :]
-        o_tensor = self.alloc_tensor(q_nope.shape, dtype=q_nope.dtype) if out is None else out
-        context_attention_fwd_with_v(
-            q_nope,
-            q_rope,
-            k_nope,
-            k_rope,
-            v,
-            o_tensor.view(-1, self.tp_q_head_num_, q_nope.shape[-1]),
-            infer_state.b_start_loc,
-            infer_state.b_kv_start_loc,
-            infer_state.b_seq_len,
-            infer_state.b_ready_cache_len,
-            infer_state.max_len_in_batch,
-            self.softmax_scale,
+        o_tensor = (
+            self.alloc_tensor((q.shape[0], q.shape[1], self.qk_nope_head_dim), dtype=q.dtype) if out is None else out
         )
+        if self.enable_flashinfer_prefilled:
+            k = torch.cat([k_nope, torch.repeat_interleave(k_rope, self.tp_q_head_num_, dim=-2)], dim=-1)
+            infer_state.wrapper.run(q, k, v, out=o_tensor)
+        else:
+            q_nope, q_rope = q[:, :, : -self.qk_rope_head_dim], q[:, :, -self.qk_rope_head_dim :]
+            context_attention_fwd_with_v(
+                q_nope,
+                q_rope,
+                k_nope,
+                k_rope,
+                v,
+                o_tensor.view(-1, self.tp_q_head_num_, q_nope.shape[-1]),
+                infer_state.b_start_loc,
+                infer_state.b_kv_start_loc,
+                infer_state.b_seq_len,
+                infer_state.b_ready_cache_len,
+                infer_state.max_len_in_batch,
+                self.softmax_scale,
+            )
         return o_tensor
 
     def _context_attention_kernel_with_CC_fp8(
@@ -252,20 +263,24 @@ class Deepseek2TransformerLayerInfer(LlamaTransformerLayerInfer):
         k_nope, k_rope, v = self._decompress_kv(kv, infer_state, layer_weight, True)
         q_nope, q_rope = q[:, :, : -self.qk_rope_head_dim], q[:, :, -self.qk_rope_head_dim :]
         o_tensor = self.alloc_tensor(q_nope.shape, dtype=q_nope.dtype) if out is None else out
-        context_attention_fwd_with_v(
-            q_nope,
-            q_rope,
-            k_nope,
-            k_rope,
-            v,
-            o_tensor.view(-1, self.tp_q_head_num_, q_nope.shape[-1]),
-            infer_state.b_start_loc,
-            infer_state.b_kv_start_loc,
-            infer_state.b_seq_len,
-            infer_state.b_ready_cache_len,
-            infer_state.max_len_in_batch,
-            self.softmax_scale,
-        )
+        if self.enable_flashinfer_prefilled:
+            k = torch.cat([k_nope, torch.repeat_interleave(k_rope, self.tp_q_head_num_, dim=-2)], dim=-1)
+            infer_state.wrapper.run(q, k, v, out=o_tensor)
+        else:
+            context_attention_fwd_with_v(
+                q_nope,
+                q_rope,
+                k_nope,
+                k_rope,
+                v,
+                o_tensor.view(-1, self.tp_q_head_num_, q_nope.shape[-1]),
+                infer_state.b_start_loc,
+                infer_state.b_kv_start_loc,
+                infer_state.b_seq_len,
+                infer_state.b_ready_cache_len,
+                infer_state.max_len_in_batch,
+                self.softmax_scale,
+            )
         return o_tensor
 
     def _context_attention_kernel_origin(
